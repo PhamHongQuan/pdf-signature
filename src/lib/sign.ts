@@ -1,5 +1,5 @@
-import { decodePDFRawStream, degrees, PDFArray, PDFDocument, PDFRawStream, type PDFPage } from 'pdf-lib';
-import { normalizeRotation, toPdfRect, type Box, type Placement } from './geometry';
+import { decodePDFRawStream, degrees, PDFArray, PDFDocument, PDFRawStream, type PDFImage, type PDFPage } from 'pdf-lib';
+import { normalizeRotation, toPdfRect, type Box, type Kind, type Placement } from './geometry';
 
 export class PdfLoadError extends Error {}
 
@@ -41,15 +41,26 @@ function viewBox(page: PDFPage): Box {
  * Draws the signature at every placement. pdf-lib wraps the page's original
  * content streams in q/Q and appends a new stream; original bytes are untouched.
  */
-export async function signPdf(bytes: Uint8Array, png: Uint8Array, placements: Placement[]): Promise<Uint8Array> {
+export async function signPdf(
+  bytes: Uint8Array,
+  images: Partial<Record<Kind, Uint8Array>>,
+  placements: Placement[],
+): Promise<Uint8Array> {
   const doc = await PDFDocument.load(bytes, { updateMetadata: false });
-  const image = await doc.embedPng(png); // embedded once, drawn many times
-  const aspect = image.width / image.height;
+  const embedded = new Map<Kind, PDFImage>(); // each kind embedded once, drawn many times
   for (const p of placements) {
+    const kind = p.kind ?? 'sign';
+    let image = embedded.get(kind);
+    if (!image) {
+      const png = images[kind];
+      if (!png) throw new Error(`Thiếu ảnh cho loại "${kind}".`);
+      image = await doc.embedPng(png);
+      embedded.set(kind, image);
+    }
     const page = doc.getPage(p.page);
     const n = normalizeRotation(page.getRotation().angle);
     const rot = n % 90 === 0 ? n : 0; // pdf.js ignores a /Rotate that is not a multiple of 90
-    const r = toPdfRect(p, viewBox(page), rot, aspect);
+    const r = toPdfRect(p, viewBox(page), rot, image.width / image.height);
     page.drawImage(image, { x: r.x, y: r.y, width: r.width, height: r.height, rotate: degrees(r.rotate) });
   }
   return doc.save({ useObjectStreams: false });

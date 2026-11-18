@@ -1,16 +1,33 @@
 import { useEffect, useRef, useState, type PointerEvent } from 'react';
 import { trimBounds } from '../lib/geometry';
+import { stack, textCanvas, toStamp, type Stamps } from '../lib/stamp';
 import { Sheet } from './Sheet';
 
-export type Signature = { png: Uint8Array; url: string; aspect: number };
+export type Signature = { name: string; stamps: Stamps };
 
 const PAD = 4; // transparent margin kept around the trimmed strokes
+const NAME_PX = 64; // name image font size, in image pixels
+const NAME_KEY = 'ky-pdf-name';
 
-/** Draw-on-screen signature (finger, mouse or pen). Exports a transparent PNG trimmed to the ink. */
+function storedName(): string {
+  try {
+    return localStorage.getItem(NAME_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Draw-on-screen signature (finger, mouse or pen) plus an optional full name.
+ * Produces up to three transparent PNGs: the signature trimmed to the ink,
+ * the name, and the signature with the name centred below it.
+ */
 export function SignaturePad({ onDone, onClose }: { onDone: (s: Signature) => void; onClose: () => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const last = useRef<{ x: number; y: number } | null>(null);
   const [empty, setEmpty] = useState(true);
+  const [name, setName] = useState(storedName);
+  const trimmedName = name.trim();
 
   useEffect(() => {
     const c = canvasRef.current!;
@@ -71,18 +88,27 @@ export function SignaturePad({ onDone, onClose }: { onDone: (s: Signature) => vo
   const done = async () => {
     const c = canvasRef.current!;
     const box = trimBounds(c.getContext('2d')!.getImageData(0, 0, c.width, c.height).data, c.width, c.height);
-    if (!box) return;
-    const out = document.createElement('canvas');
-    out.width = box.w + PAD * 2;
-    out.height = box.h + PAD * 2;
-    out.getContext('2d')!.drawImage(c, box.x, box.y, box.w, box.h, PAD, PAD, box.w, box.h);
-    const blob = await new Promise<Blob | null>((resolve) => out.toBlob(resolve, 'image/png'));
-    if (!blob) return;
-    onDone({
-      png: new Uint8Array(await blob.arrayBuffer()),
-      url: URL.createObjectURL(blob),
-      aspect: out.width / out.height,
-    });
+    if (!box && !trimmedName) return;
+    let ink: HTMLCanvasElement | null = null;
+    if (box) {
+      ink = document.createElement('canvas');
+      ink.width = box.w + PAD * 2;
+      ink.height = box.h + PAD * 2;
+      ink.getContext('2d')!.drawImage(c, box.x, box.y, box.w, box.h, PAD, PAD, box.w, box.h);
+    }
+    const stamps: Stamps = {};
+    if (ink) stamps.sign = await toStamp(ink);
+    if (trimmedName) {
+      stamps.name = await toStamp(textCanvas(trimmedName, NAME_PX));
+      // Under the signature the name is about a third of the signature's height.
+      if (ink) stamps.both = await toStamp(stack(ink, textCanvas(trimmedName, Math.min(Math.max(ink.height * 0.3, 24), 96))));
+    }
+    try {
+      localStorage.setItem(NAME_KEY, trimmedName);
+    } catch {
+      /* storage unavailable: the name is just not remembered */
+    }
+    onDone({ name: trimmedName, stamps });
   };
 
   return (
@@ -94,7 +120,7 @@ export function SignaturePad({ onDone, onClose }: { onDone: (s: Signature) => vo
           <button className="btn block" onClick={clear} disabled={empty}>
             Xoá
           </button>
-          <button className="btn primary block" onClick={done} disabled={empty}>
+          <button className="btn primary block" onClick={done} disabled={empty && !trimmedName}>
             Xong
           </button>
         </>
@@ -110,6 +136,16 @@ export function SignaturePad({ onDone, onClose }: { onDone: (s: Signature) => vo
         aria-label="Khung ký tên"
       />
       <p className="pad-hint">Ký vào khung trắng bằng ngón tay, chuột hoặc bút.</p>
+      <input
+        className="name-input"
+        type="text"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="Họ và tên (không bắt buộc)"
+        autoComplete="name"
+        aria-label="Họ và tên"
+        maxLength={80}
+      />
     </Sheet>
   );
 }

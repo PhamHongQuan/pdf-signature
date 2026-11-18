@@ -34,7 +34,7 @@ const p = (page: number, x: number, y: number, w: number, id = `${page}-${x}`): 
 
 describe('signPdf', () => {
   it('draws at the expected PDF position on a plain page', async () => {
-    const signed = await signPdf(await samplePdf(), PNG, [p(0, 0.5, 0.25, 0.5)]);
+    const signed = await signPdf(await samplePdf(), { sign: PNG }, [p(0, 0.5, 0.25, 0.5)]);
     const last = (await decodedStreams(signed, 0)).at(-1)!;
     // 300x300 signature, top-left at (300, 200) on screen → bottom-left at PDF (300, 300)
     expect(last).toContain('1 0 0 1 300 300 cm');
@@ -45,7 +45,7 @@ describe('signPdf', () => {
     const doc = await PDFDocument.create();
     const pg = doc.addPage([600, 800]);
     pg.node.set(PDFName.of('MediaBox'), doc.context.obj([600, 800, 0, 0]));
-    const signed = await signPdf(await doc.save({ useObjectStreams: false }), PNG, [p(0, 0.5, 0.25, 0.5)]);
+    const signed = await signPdf(await doc.save({ useObjectStreams: false }), { sign: PNG }, [p(0, 0.5, 0.25, 0.5)]);
     expect((await decodedStreams(signed, 0)).at(-1)!).toContain('1 0 0 1 300 300 cm');
   });
 
@@ -53,7 +53,7 @@ describe('signPdf', () => {
     const doc = await PDFDocument.create();
     const pg = doc.addPage([600, 800]);
     pg.node.set(PDFName.of('Rotate'), PDFNumber.of(45));
-    const signed = await signPdf(await doc.save({ useObjectStreams: false }), PNG, [p(0, 0.5, 0.25, 0.5)]);
+    const signed = await signPdf(await doc.save({ useObjectStreams: false }), { sign: PNG }, [p(0, 0.5, 0.25, 0.5)]);
     const last = (await decodedStreams(signed, 0)).at(-1)!;
     expect(last).toContain('1 0 0 1 300 300 cm\n1 0 0 1 0 0 cm');
   });
@@ -61,22 +61,42 @@ describe('signPdf', () => {
   it('accounts for /Rotate and the crop box', async () => {
     // page 2 displays 600 wide x 500 tall; signature 150x150 at the screen's top-left
     // → anchor PDF (50 + 150, 100 + 0) = (200, 100), rotated 90
-    const signed = await signPdf(await samplePdf(), PNG, [p(1, 0, 0, 0.25)]);
+    const signed = await signPdf(await samplePdf(), { sign: PNG }, [p(1, 0, 0, 0.25)]);
     const last = (await decodedStreams(signed, 1)).at(-1)!;
     expect(last).toContain('1 0 0 1 200 100 cm');
   });
 
   it('wraps original content so an unclosed cm cannot move the signature', async () => {
-    const signed = await signPdf(await samplePdf(), PNG, [p(2, 0, 0, 0.5)]);
+    const signed = await signPdf(await samplePdf(), { sign: PNG }, [p(2, 0, 0, 0.5)]);
     const streams = await decodedStreams(signed, 2);
     expect(streams[0].trim()).toBe('q');
     expect(streams.at(-2)!.trim()).toBe('Q');
   });
 
   it('embeds the image once however many placements', async () => {
-    const one = await signPdf(await samplePdf(), PNG, [p(0, 0, 0, 0.2)]);
-    const many = await signPdf(await samplePdf(), PNG, [p(0, 0, 0, 0.2), p(0, 0.5, 0.5, 0.2), p(1, 0, 0, 0.2)]);
+    const one = await signPdf(await samplePdf(), { sign: PNG }, [p(0, 0, 0, 0.2)]);
+    const many = await signPdf(await samplePdf(), { sign: PNG }, [p(0, 0, 0, 0.2), p(0, 0.5, 0.5, 0.2), p(1, 0, 0, 0.2)]);
     expect(many.length - one.length).toBeLessThan(2000);
+  });
+});
+
+describe('signPdf with several kinds', () => {
+  it('embeds each kind once and draws one image per placement', async () => {
+    const original = await samplePdf();
+    const placements = [p(0, 0, 0, 0.2, 'a'), { ...p(0, 0.5, 0.5, 0.2, 'b'), kind: 'name' as const }, { ...p(1, 0, 0, 0.2, 'c'), kind: 'name' as const }];
+    const signed = await signPdf(original, { sign: PNG, name: PNG }, placements);
+    const doc = await PDFDocument.load(signed);
+    const images = doc.context
+      .enumerateIndirectObjects()
+      .filter(([, o]) => o instanceof PDFRawStream && o.dict.get(PDFName.of('Subtype'))?.toString() === '/Image');
+    // a PNG with transparency also embeds its alpha channel as an /SMask image
+    const masks = new Set(images.map(([, o]) => (o as PDFRawStream).dict.get(PDFName.of('SMask'))?.toString()));
+    expect(images.filter(([ref]) => !masks.has(ref.toString()))).toHaveLength(2);
+    expect(await verifySigned(original, signed, placements)).toEqual([]);
+  });
+
+  it('refuses a placement whose image is missing', async () => {
+    await expect(signPdf(await samplePdf(), { sign: PNG }, [{ ...p(0, 0, 0, 0.2), kind: 'both' }])).rejects.toThrow();
   });
 });
 
@@ -85,19 +105,19 @@ describe('verifySigned', () => {
 
   it('accepts a correctly signed file', async () => {
     const original = await samplePdf();
-    expect(await verifySigned(original, await signPdf(original, PNG, placements), placements)).toEqual([]);
+    expect(await verifySigned(original, await signPdf(original, { sign: PNG }, placements), placements)).toEqual([]);
   });
 
   it('rejects a file whose original content differs', async () => {
     const original = await samplePdf('Hello');
-    const other = await signPdf(await samplePdf('Hellx'), PNG, placements);
+    const other = await signPdf(await samplePdf('Hellx'), { sign: PNG }, placements);
     const problems = await verifySigned(original, other, placements);
     expect(problems.join(' ')).toContain('Trang 1');
   });
 
   it('rejects a missing or extra signature', async () => {
     const original = await samplePdf();
-    const signed = await signPdf(original, PNG, placements);
+    const signed = await signPdf(original, { sign: PNG }, placements);
     expect(await verifySigned(original, signed, placements.slice(1))).toHaveLength(1);
   });
 });

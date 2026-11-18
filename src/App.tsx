@@ -4,13 +4,26 @@ import { PageView } from './components/PageView';
 import { PlacementBox } from './components/PlacementBox';
 import { SignaturePad, type Signature } from './components/SignaturePad';
 import { downloadFile, safeFileName } from './lib/download';
-import { clampPlacement, type Placement } from './lib/geometry';
+import { clampPlacement, type Kind, type Placement } from './lib/geometry';
 import { loadPdf, type OpenPdf } from './lib/pdf';
 import { PdfLoadError, signPdf, verifySigned } from './lib/sign';
+import { revokeStamps, type Stamps } from './lib/stamp';
 import { useTheme } from './lib/theme';
 
 const pageWidth = () => Math.min(window.innerWidth - 32, 820);
 const DEFAULT_W = 0.25;
+const KINDS: { kind: Kind; label: string }[] = [
+  { kind: 'sign', label: 'Chữ ký' },
+  { kind: 'name', label: 'Họ tên' },
+  { kind: 'both', label: 'Cả hai' },
+];
+
+/** What an existing placement shows once the stamps change, or null to drop it. */
+function remapKind(kind: Kind, stamps: Stamps): Kind | null {
+  if (stamps[kind]) return kind;
+  if (kind === 'both') return stamps.sign ? 'sign' : stamps.name ? 'name' : null;
+  return null;
+}
 
 export default function App() {
   const [theme, toggleTheme] = useTheme();
@@ -19,7 +32,9 @@ export default function App() {
   const [placements, setPlacements] = useState<Placement[]>([]);
   const [docKey, setDocKey] = useState(0);
   const [dirty, setDirty] = useState(false); // placed signatures not yet downloaded
+  const [kind, setKind] = useState<Kind>('sign'); // what the next tap places
   const [padOpen, setPadOpen] = useState(false);
+  const [tip, setTip] = useState(false); // "tap where to sign", shown once after a fresh signature
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [width, setWidth] = useState(pageWidth);
@@ -57,6 +72,7 @@ export default function App() {
       setPdf(next);
       setPlacements([]);
       setDirty(false);
+      setTip(false);
       setDocKey((k) => k + 1);
       await old?.view.destroy();
     } catch (err) {
@@ -65,10 +81,12 @@ export default function App() {
   };
 
   const place = (page: number, x: number, y: number, pageAspect: number) => {
-    if (!signature) return setPadOpen(true);
-    const h = (DEFAULT_W * pageAspect) / signature.aspect;
-    const p = { id: crypto.randomUUID(), page, x: x - DEFAULT_W / 2, y: y - h / 2, w: DEFAULT_W };
-    edit((list) => [...list, clampPlacement(p, signature.aspect, pageAspect)]);
+    const stamp = signature?.stamps[kind];
+    if (!stamp) return setPadOpen(true);
+    const h = (DEFAULT_W * pageAspect) / stamp.aspect;
+    const p = { id: crypto.randomUUID(), page, x: x - DEFAULT_W / 2, y: y - h / 2, w: DEFAULT_W, angle: 0, kind };
+    edit((list) => [...list, clampPlacement(p, stamp.aspect, pageAspect)]);
+    setTip(false);
   };
 
   const download = async () => {
@@ -78,10 +96,12 @@ export default function App() {
     try {
       // Re-clamp: a redrawn signature with another aspect ratio may overflow the page.
       // A page with a signature has rendered its overlay, so its aspect is recorded.
+      const { stamps } = signature;
       const final = placements.map((p) =>
-        clampPlacement(p, signature.aspect, aspects.current.get(p.page) ?? 1 / Math.SQRT2),
+        clampPlacement(p, stamps[p.kind ?? 'sign']!.aspect, aspects.current.get(p.page) ?? 1 / Math.SQRT2),
       );
-      const out = await signPdf(pdf.bytes, signature.png, final);
+      const images = Object.fromEntries(Object.entries(stamps).map(([k, s]) => [k, s.png]));
+      const out = await signPdf(pdf.bytes, images, final);
       const problems = await verifySigned(pdf.bytes, out, final);
       if (problems.length) {
         setError(`Không tải xuống vì kiểm tra toàn vẹn thất bại: ${problems.join(' ')}`);
@@ -148,12 +168,27 @@ export default function App() {
       )}
       {pdf ? (
         <>
+          {signature && (
+            <div className="kinds" role="group" aria-label="Loại cần chèn">
+              {KINDS.map(({ kind: k, label }) => (
+                <button
+                  key={k}
+                  className={k === kind ? 'kind active' : 'kind'}
+                  aria-pressed={k === kind}
+                  disabled={!signature.stamps[k]}
+                  onClick={() => setKind(k)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
           <p className="hint">
             {signature
-              ? 'Chạm vào trang để đặt chữ ký. Kéo để di chuyển, kéo chấm ở góc để đổi cỡ.'
+              ? 'Chạm vào trang để đặt loại đang chọn. Kéo để di chuyển, kéo chấm ở góc để đổi cỡ, kéo chấm tròn phía trên để xoay.'
               : 'Bấm “Vẽ chữ ký”, rồi chạm vào trang để đặt chữ ký.'}
           </p>
-          <main key={docKey} className="pages">
+          <main key={docKey} className={signature ? 'pages has-signature' : 'pages'}>
             {Array.from({ length: pdf.view.numPages }, (_, i) => (
               <PageView key={i} doc={pdf.view} index={i} width={width} onTap={(x, y, a) => place(i, x, y, a)}>
                 {(pageAspect) => {
@@ -162,17 +197,20 @@ export default function App() {
                     signature &&
                     placements
                       .filter((p) => p.page === i)
-                      .map((p) => (
-                        <PlacementBox
-                          key={p.id}
-                          p={clampPlacement(p, signature.aspect, pageAspect)}
-                          url={signature.url}
-                          aspect={signature.aspect}
-                          pageAspect={pageAspect}
-                          onChange={(next) => edit((list) => list.map((q) => (q.id === next.id ? next : q)))}
-                          onRemove={(id) => edit((list) => list.filter((q) => q.id !== id))}
-                        />
-                      ))
+                      .map((p) => {
+                        const stamp = signature.stamps[p.kind ?? 'sign']!;
+                        return (
+                          <PlacementBox
+                            key={p.id}
+                            p={clampPlacement(p, stamp.aspect, pageAspect)}
+                            url={stamp.url}
+                            aspect={stamp.aspect}
+                            pageAspect={pageAspect}
+                            onChange={(next) => edit((list) => list.map((q) => (q.id === next.id ? next : q)))}
+                            onRemove={(id) => edit((list) => list.filter((q) => q.id !== id))}
+                          />
+                        );
+                      })
                   );
                 }}
               </PageView>
@@ -190,12 +228,29 @@ export default function App() {
         <SignaturePad
           onClose={() => setPadOpen(false)}
           onDone={(s) => {
-            if (signature) URL.revokeObjectURL(signature.url);
+            if (signature) revokeStamps(signature.stamps);
             setSignature(s);
+            setKind(s.stamps.both ? 'both' : s.stamps.sign ? 'sign' : 'name');
             setPadOpen(false);
-            if (placements.length) setDirty(true);
+            if (placements.length) {
+              // Existing placements follow the new content; a kind that no longer exists falls back or goes.
+              edit((list) =>
+                list.flatMap((p) => {
+                  const k = remapKind(p.kind ?? 'sign', s.stamps);
+                  return k ? [{ ...p, kind: k }] : [];
+                }),
+              );
+            } else setTip(true);
           }}
         />
+      )}
+      {tip && !padOpen && (
+        <div className="tip" role="status">
+          <span>👆 Chọn loại cần chèn ở trên, rồi chạm vào vị trí trên trang</span>
+          <button className="icon-btn" onClick={() => setTip(false)} aria-label="Đóng gợi ý">
+            <Icon name="close" size={16} />
+          </button>
+        </div>
       )}
     </div>
   );

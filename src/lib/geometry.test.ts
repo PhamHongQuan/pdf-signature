@@ -31,6 +31,28 @@ describe('toPdfRect', () => {
   });
 });
 
+describe('toPdfRect with a free rotation', () => {
+  // centre of the drawn image, from pdf-lib's anchor (bottom-left) and CCW rotation
+  const centre = (r: { x: number; y: number; width: number; height: number; rotate: number }) => {
+    const a = (r.rotate * Math.PI) / 180;
+    return [r.x + (r.width / 2) * Math.cos(a) - (r.height / 2) * Math.sin(a), r.y + (r.width / 2) * Math.sin(a) + (r.height / 2) * Math.cos(a)];
+  };
+
+  it('angle 90 on a plain page: turns clockwise on screen around the centre', () => {
+    // 300x100 centred at screen (450, 250) → PDF centre (450, 550); clockwise 90 = CCW 270
+    expect(toPdfRect({ ...at(0.5, 0.25, 0.5), angle: 90 }, page, 0, 3)).toEqual({ x: 400, y: 700, width: 300, height: 100, rotate: 270 });
+  });
+
+  it('keeps the centre for any angle on a /Rotate 90 page', () => {
+    // displayed 800x600; 200x100 centred at screen (100, 50) → PDF centre (50, 100)
+    const r = toPdfRect({ ...at(0, 0, 0.25), angle: 30 }, page, 90, 2);
+    expect(r.rotate).toBe(60);
+    const [cx, cy] = centre(r);
+    expect(cx).toBeCloseTo(50);
+    expect(cy).toBeCloseTo(100);
+  });
+});
+
 describe('clampPlacement', () => {
   it('keeps the signature inside the page', () => {
     // page aspect 0.75, signature aspect 3 → full width is 0.25 of page height
@@ -39,6 +61,16 @@ describe('clampPlacement', () => {
 
   it('limits width so a tall signature still fits vertically', () => {
     expect(clampPlacement(at(0, 0, 0.9), 0.5, 1).w).toBe(0.5);
+  });
+
+  it('keeps a rotated signature inside the page', () => {
+    // portrait page; 90° turns a wide signature upright: 0.25 of page width, 0.75 of page height
+    expect(clampPlacement({ ...at(0, 0, 1), angle: 90 }, 3, 0.75)).toMatchObject({ x: 0, y: 0.25, w: 1 });
+  });
+
+  it('shrinks a rotated signature that cannot fit', () => {
+    // landscape page 1.5:1; upright 3:1 signature at full width would be 1.5 page heights tall
+    expect(clampPlacement({ ...at(0, 0, 1), angle: 90 }, 3, 1.5).w).toBeCloseTo(2 / 3);
   });
 
   it('enforces a minimum size', () => {
