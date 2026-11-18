@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { Icon } from './components/Icon';
 import { PageView } from './components/PageView';
 import { PlacementBox } from './components/PlacementBox';
+import { Sheet } from './components/Sheet';
 import { SignaturePad, type Signature } from './components/SignaturePad';
-import { downloadFile, safeFileName } from './lib/download';
+import { downloadFile, safeFileName, shareableFile } from './lib/download';
 import { clampPlacement, type Kind, type Placement } from './lib/geometry';
 import { loadPdf, type OpenPdf } from './lib/pdf';
 import { PdfLoadError, signPdf, verifySigned } from './lib/sign';
@@ -39,6 +40,8 @@ export default function App() {
   const [padOpen, setPadOpen] = useState(false);
   const [tip, setTip] = useState(false); // "tap where to sign", shown once after a fresh signature
   const [busy, setBusy] = useState(false);
+  // Phones: the signed file waits here for a tap on "Lưu / Chia sẻ" (the share sheet needs a fresh tap).
+  const [ready, setReady] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [width, setWidth] = useState(pageWidth);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -126,12 +129,29 @@ export default function App() {
         setError(`Không tải xuống vì kiểm tra toàn vẹn thất bại: ${problems.join(' ')}`);
         return;
       }
-      downloadFile(out, `${safeFileName(pdf.name)}-signed.pdf`, 'application/pdf');
+      const name = `${safeFileName(pdf.name)}-signed.pdf`;
+      const file = shareableFile(out, name, 'application/pdf');
+      if (file) return setReady(file);
+      downloadFile(out, name, 'application/pdf');
       setDirty(false);
     } catch {
       setError('Không tạo được file đã ký.');
     } finally {
       setBusy(false);
+    }
+  };
+
+  const save = async () => {
+    if (!ready) return;
+    try {
+      await navigator.share({ files: [ready], title: ready.name });
+      setDirty(false);
+      setReady(null);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return; // closed the share sheet
+      downloadFile(new Uint8Array(await ready.arrayBuffer()), ready.name, 'application/pdf');
+      setDirty(false);
+      setReady(null);
     }
   };
 
@@ -281,6 +301,28 @@ export default function App() {
             } else setTip(true);
           }}
         />
+      )}
+      {ready && (
+        <Sheet
+          title="Đã ký xong"
+          onClose={() => setReady(null)}
+          footer={
+            <>
+              <button className="btn block" onClick={() => setReady(null)}>
+                Đóng
+              </button>
+              <button className="btn primary block" onClick={save}>
+                <Icon name="download" />
+                Lưu / Chia sẻ
+              </button>
+            </>
+          }
+        >
+          <p className="sheet-text">
+            Bấm “Lưu / Chia sẻ”, rồi chọn <strong>Lưu vào Tệp</strong> (iPhone) hoặc ứng dụng muốn gửi file{' '}
+            <strong>{ready.name}</strong>.
+          </p>
+        </Sheet>
       )}
       {tip && !padOpen && (
         <div className="tip" role="status">

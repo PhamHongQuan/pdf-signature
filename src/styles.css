@@ -205,3 +205,5 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
   .hint-more { display: none; }
   .tip { font-size: 14px; }
 }
+.sheet-text { margin: 4px 8px 8px; color: var(--muted); font-size: 15px; overflow-wrap: anywhere; }
+.sheet-text strong { color: var(--text); }

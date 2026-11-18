@@ -9,6 +9,17 @@ export function downloadFile(data: Uint8Array | string, filename: string, type: 
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
+/**
+ * On phones, a blob link makes iOS Safari replace the app with its PDF viewer
+ * (no way back, no save button). The share sheet offers "Save to Files" instead.
+ * Returns the file when that route is available, else null (use downloadFile).
+ */
+export function shareableFile(data: Uint8Array, filename: string, type: string): File | null {
+  const file = new File([data as BlobPart], filename, { type });
+  const phone = window.matchMedia('(pointer: coarse)').matches;
+  return phone && navigator.canShare?.({ files: [file] }) ? file : null;
+}
+
 export function safeFileName(name: string): string {
   const cleaned = name
     .trim()
