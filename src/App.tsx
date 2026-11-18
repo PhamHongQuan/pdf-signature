@@ -12,10 +12,10 @@ import { useTheme } from './lib/theme';
 
 const pageWidth = () => Math.min(window.innerWidth - 32, 820);
 const DEFAULT_W = 0.25;
-const KINDS: { kind: Kind; label: string }[] = [
-  { kind: 'sign', label: 'Chữ ký' },
-  { kind: 'name', label: 'Họ tên' },
-  { kind: 'both', label: 'Cả hai' },
+const KINDS: { kind: Kind; label: string; what: string }[] = [
+  { kind: 'sign', label: 'Chữ ký', what: 'chữ ký' },
+  { kind: 'name', label: 'Họ tên', what: 'họ tên' },
+  { kind: 'both', label: 'Cả hai', what: 'chữ ký + họ tên' },
 ];
 
 /** What an existing placement shows once the stamps change, or null to drop it. */
@@ -32,7 +32,10 @@ export default function App() {
   const [placements, setPlacements] = useState<Placement[]>([]);
   const [docKey, setDocKey] = useState(0);
   const [dirty, setDirty] = useState(false); // placed signatures not yet downloaded
-  const [kind, setKind] = useState<Kind>('sign'); // what the next tap places
+  // The kind the next tap inserts; null = taps on the page insert nothing. One tap, then it turns off.
+  const [arming, setArming] = useState<Kind | null>(null);
+  // The placement showing its frame and handles; others show only the stamp.
+  const [selected, setSelected] = useState<string | null>(null);
   const [padOpen, setPadOpen] = useState(false);
   const [tip, setTip] = useState(false); // "tap where to sign", shown once after a fresh signature
   const [busy, setBusy] = useState(false);
@@ -58,6 +61,17 @@ export default function App() {
     return () => window.removeEventListener('beforeunload', warn);
   }, [dirty]);
 
+  useEffect(() => {
+    if (!arming && !selected) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      setArming(null);
+      setSelected(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [arming, selected]);
+
   const edit = (fn: (list: Placement[]) => Placement[]) => {
     setPlacements(fn);
     setDirty(true);
@@ -73,6 +87,8 @@ export default function App() {
       setPlacements([]);
       setDirty(false);
       setTip(false);
+      setArming(null);
+      setSelected(null);
       setDocKey((k) => k + 1);
       await old?.view.destroy();
     } catch (err) {
@@ -81,12 +97,15 @@ export default function App() {
   };
 
   const place = (page: number, x: number, y: number, pageAspect: number) => {
-    const stamp = signature?.stamps[kind];
-    if (!stamp) return setPadOpen(true);
+    setSelected(null); // a tap on the page itself (not on a stamp) clears the selection
+    if (!arming) return;
+    const stamp = signature?.stamps[arming];
+    if (!stamp) return;
     const h = (DEFAULT_W * pageAspect) / stamp.aspect;
-    const p = { id: crypto.randomUUID(), page, x: x - DEFAULT_W / 2, y: y - h / 2, w: DEFAULT_W, angle: 0, kind };
+    const p = { id: crypto.randomUUID(), page, x: x - DEFAULT_W / 2, y: y - h / 2, w: DEFAULT_W, angle: 0, kind: arming };
     edit((list) => [...list, clampPlacement(p, stamp.aspect, pageAspect)]);
     setTip(false);
+    setArming(null);
   };
 
   const download = async () => {
@@ -173,22 +192,36 @@ export default function App() {
               {KINDS.map(({ kind: k, label }) => (
                 <button
                   key={k}
-                  className={k === kind ? 'kind active' : 'kind'}
-                  aria-pressed={k === kind}
+                  className={k === arming ? 'kind active' : 'kind'}
+                  aria-pressed={k === arming}
                   disabled={!signature.stamps[k]}
-                  onClick={() => setKind(k)}
+                  onClick={() => {
+                    setArming((a) => (a === k ? null : k));
+                    setTip(false);
+                  }}
                 >
                   {label}
                 </button>
               ))}
             </div>
           )}
-          <p className="hint">
-            {signature
-              ? 'Chạm vào trang để đặt loại đang chọn. Kéo để di chuyển, kéo chấm ở góc để đổi cỡ, kéo chấm tròn phía trên để xoay.'
-              : 'Bấm “Vẽ chữ ký”, rồi chạm vào trang để đặt chữ ký.'}
+          {/* One short line on phones; the extra help is hidden there (see .hint-more). */}
+          <p className={arming ? 'hint arming-hint' : 'hint'}>
+            {arming ? (
+              <>
+                Chạm vào trang để chèn {KINDS.find((k) => k.kind === arming)!.what}
+                <span className="hint-more"> (Esc để huỷ)</span>
+              </>
+            ) : signature ? (
+              <>
+                Chọn loại ở trên rồi chạm vào trang để chèn.
+                <span className="hint-more"> Chạm vào chữ ký đã chèn để di chuyển, đổi cỡ, xoay hoặc xoá.</span>
+              </>
+            ) : (
+              'Bấm “Vẽ chữ ký” để bắt đầu.'
+            )}
           </p>
-          <main key={docKey} className={signature ? 'pages has-signature' : 'pages'}>
+          <main key={docKey} className={arming ? 'pages arming' : 'pages'}>
             {Array.from({ length: pdf.view.numPages }, (_, i) => (
               <PageView key={i} doc={pdf.view} index={i} width={width} onTap={(x, y, a) => place(i, x, y, a)}>
                 {(pageAspect) => {
@@ -206,8 +239,13 @@ export default function App() {
                             url={stamp.url}
                             aspect={stamp.aspect}
                             pageAspect={pageAspect}
+                            selected={p.id === selected}
+                            onSelect={() => setSelected(p.id)}
                             onChange={(next) => edit((list) => list.map((q) => (q.id === next.id ? next : q)))}
-                            onRemove={(id) => edit((list) => list.filter((q) => q.id !== id))}
+                            onRemove={(id) => {
+                              edit((list) => list.filter((q) => q.id !== id));
+                              setSelected(null);
+                            }}
                           />
                         );
                       })
@@ -230,7 +268,7 @@ export default function App() {
           onDone={(s) => {
             if (signature) revokeStamps(signature.stamps);
             setSignature(s);
-            setKind(s.stamps.both ? 'both' : s.stamps.sign ? 'sign' : 'name');
+            setArming(null);
             setPadOpen(false);
             if (placements.length) {
               // Existing placements follow the new content; a kind that no longer exists falls back or goes.
@@ -246,7 +284,7 @@ export default function App() {
       )}
       {tip && !padOpen && (
         <div className="tip" role="status">
-          <span>👆 Chọn loại cần chèn ở trên, rồi chạm vào vị trí trên trang</span>
+          <span>👆 Chọn loại ở trên, rồi chạm vào trang</span>
           <button className="icon-btn" onClick={() => setTip(false)} aria-label="Đóng gợi ý">
             <Icon name="close" size={16} />
           </button>

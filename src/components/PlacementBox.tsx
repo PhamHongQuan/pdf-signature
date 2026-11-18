@@ -6,6 +6,9 @@ interface Props {
   url: string;
   aspect: number;
   pageAspect: number;
+  /** Selected: shows the frame and the remove/rotate/resize handles. */
+  selected: boolean;
+  onSelect: () => void;
   onChange: (p: Placement) => void;
   onRemove: (id: string) => void;
 }
@@ -30,7 +33,7 @@ function snap(angle: number): number {
 }
 
 /** A placed signature: drag to move, corner to resize, top knob to rotate, × to remove. */
-export function PlacementBox({ p, url, aspect, pageAspect, onChange, onRemove }: Props) {
+export function PlacementBox({ p, url, aspect, pageAspect, selected, onSelect, onChange, onRemove }: Props) {
   const drag = useRef<Drag | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const angle = p.angle ?? 0;
@@ -38,6 +41,7 @@ export function PlacementBox({ p, url, aspect, pageAspect, onChange, onRemove }:
   const begin = (mode: Mode) => (e: PointerEvent<HTMLElement>) => {
     e.stopPropagation();
     if (!e.isPrimary || e.button !== 0) return;
+    onSelect();
     const overlay = e.currentTarget.closest('.page-overlay') as HTMLElement;
     const b = boxRef.current!.getBoundingClientRect(); // a rotated box's bounding rect shares its centre
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -89,7 +93,7 @@ export function PlacementBox({ p, url, aspect, pageAspect, onChange, onRemove }:
   return (
     <div
       ref={boxRef}
-      className="placement"
+      className={selected ? 'placement selected' : 'placement'}
       style={{
         left: `${p.x * 100}%`,
         top: `${p.y * 100}%`,
@@ -104,16 +108,20 @@ export function PlacementBox({ p, url, aspect, pageAspect, onChange, onRemove }:
       onClick={(e) => e.stopPropagation()}
     >
       <img src={url} alt="Chữ ký" draggable={false} />
-      <button
-        className="placement-remove"
-        aria-label="Xoá chữ ký này"
-        onPointerDown={(e) => e.stopPropagation()}
-        onClick={() => onRemove(p.id)}
-      >
-        ×
-      </button>
-      <span className="placement-rotate" aria-hidden="true" onPointerDown={begin('rotate')} />
-      <span className="placement-resize" aria-hidden="true" onPointerDown={begin('resize')} />
+      {selected && (
+        <>
+          <button
+            className="placement-remove"
+            aria-label="Xoá chữ ký này"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => onRemove(p.id)}
+          >
+            ×
+          </button>
+          <span className="placement-rotate" aria-hidden="true" onPointerDown={begin('rotate')} />
+          <span className="placement-resize" aria-hidden="true" onPointerDown={begin('resize')} />
+        </>
+      )}
     </div>
   );
 }
