@@ -40,8 +40,10 @@ export default function App() {
   const [padOpen, setPadOpen] = useState(false);
   const [tip, setTip] = useState(false); // "tap where to sign", shown once after a fresh signature
   const [busy, setBusy] = useState(false);
-  // Phones: the signed file waits here for a tap on "Lưu / Chia sẻ" (the share sheet needs a fresh tap).
-  const [ready, setReady] = useState<File | null>(null);
+  // The signed, verified file waiting in the save sheet, where the user can rename it.
+  // Saving needs its own tap: iOS only opens the share sheet right after one.
+  const [ready, setReady] = useState<{ bytes: Uint8Array; name: string } | null>(null);
+  const phone = window.matchMedia('(pointer: coarse)').matches;
   const [error, setError] = useState<string | null>(null);
   const [width, setWidth] = useState(pageWidth);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -129,11 +131,7 @@ export default function App() {
         setError(`Không tải xuống vì kiểm tra toàn vẹn thất bại: ${problems.join(' ')}`);
         return;
       }
-      const name = `${safeFileName(pdf.name)}-signed.pdf`;
-      const file = shareableFile(out, name, 'application/pdf');
-      if (file) return setReady(file);
-      downloadFile(out, name, 'application/pdf');
-      setDirty(false);
+      setReady({ bytes: out, name: `${safeFileName(pdf.name)}-signed` });
     } catch {
       setError('Không tạo được file đã ký.');
     } finally {
@@ -143,16 +141,18 @@ export default function App() {
 
   const save = async () => {
     if (!ready) return;
-    try {
-      await navigator.share({ files: [ready], title: ready.name });
-      setDirty(false);
-      setReady(null);
-    } catch (err) {
-      if (err instanceof DOMException && err.name === 'AbortError') return; // closed the share sheet
-      downloadFile(new Uint8Array(await ready.arrayBuffer()), ready.name, 'application/pdf');
-      setDirty(false);
-      setReady(null);
-    }
+    const name = `${safeFileName(ready.name)}.pdf`;
+    const file = shareableFile(ready.bytes, name, 'application/pdf');
+    if (file) {
+      try {
+        await navigator.share({ files: [file], title: name });
+      } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') return; // closed the share sheet
+        downloadFile(ready.bytes, name, 'application/pdf');
+      }
+    } else downloadFile(ready.bytes, name, 'application/pdf');
+    setDirty(false);
+    setReady(null);
   };
 
   return (
@@ -304,24 +304,47 @@ export default function App() {
       )}
       {ready && (
         <Sheet
-          title="Đã ký xong"
+          title="Lưu file đã ký"
           onClose={() => setReady(null)}
           footer={
             <>
               <button className="btn block" onClick={() => setReady(null)}>
-                Đóng
+                Huỷ
               </button>
               <button className="btn primary block" onClick={save}>
                 <Icon name="download" />
-                Lưu / Chia sẻ
+                {phone ? 'Lưu / Chia sẻ' : 'Tải về'}
               </button>
             </>
           }
         >
-          <p className="sheet-text">
-            Bấm “Lưu / Chia sẻ”, rồi chọn <strong>Lưu vào Tệp</strong> (iPhone) hoặc ứng dụng muốn gửi file{' '}
-            <strong>{ready.name}</strong>.
-          </p>
+          <form
+            className="filename"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void save();
+            }}
+          >
+            <label htmlFor="filename">Tên file</label>
+            <div className="filename-field">
+              <input
+                id="filename"
+                type="text"
+                value={ready.name}
+                onChange={(e) => setReady({ ...ready, name: e.target.value })}
+                onFocus={(e) => e.target.select()}
+                autoComplete="off"
+                spellCheck={false}
+                maxLength={150}
+              />
+              <span>.pdf</span>
+            </div>
+          </form>
+          {phone && (
+            <p className="sheet-text">
+              Sau khi bấm “Lưu / Chia sẻ”, chọn <strong>Lưu vào Tệp</strong> (iPhone) hoặc ứng dụng muốn gửi.
+            </p>
+          )}
         </Sheet>
       )}
       {tip && !padOpen && (
